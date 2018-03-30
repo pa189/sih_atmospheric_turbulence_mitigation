@@ -44,7 +44,7 @@ selected via the --register-to flag. It can take the following values:
 """
 
 from __future__ import print_function, division, absolute_import
-
+import cv2
 import logging
 from os import walk
 from _images2gif import writeGif
@@ -58,7 +58,12 @@ from PIL import Image
 from scipy.signal import fftconvolve
 from six.moves import xrange
 
-def load_frames(path, filenames, normalise=False):
+import scipy
+'''
+from scipy import ndimage
+import matplotlib.pyplot as plt
+'''
+def load_frames(path, filenames, normalise=True):
     """Load frames from *filenames* returning a 3D-array with all pixel values.
     If *normalise* is True, then input frames are normalised onto the range
     [0,1].
@@ -70,10 +75,14 @@ def load_frames(path, filenames, normalise=False):
         # Load image with PIL
         logging.info('Loading "{fn}"'.format(fn=fn))
         im = Image.open(path + '\\' + fn)
-
+        
+        #im.show()
+        #print(len(im.getdata()[0]))
+        data  = np.asarray(im)
+        data = data[:,:,0]
         # Extract data and store as floating point data
-        im_array = np.array(im.getdata(), dtype=np.float32).reshape(im.size[::-1])
-
+        im_array = np.array(data, dtype=np.float32).reshape(im.size[::-1])
+ 
         # If we are to normalise, do so
         if normalise:
             im_array -= im_array.min()
@@ -126,31 +135,41 @@ def align(frames, template):
     for frame_idx in xrange(frames.shape[2]):
         logging.info('Aligning frame {0}/{1}'.format(frame_idx+1, frames.shape[2]))
         frame = frames[:,:,frame_idx]
+        '''
         if i == 0:
             im = Image.fromarray(tonemap(frame).copy(), 'L')
             im.show()
+        '''
         # Normalise frame
         norm_frame = frame - tmpl_min
         norm_frame /= tmpl_max
+        '''
         if i == 0:
             im = Image.fromarray(tonemap(norm_frame).copy(), 'L')
             im.show()
+        '''
         # Convolve template and frame
         ex1 = norm_template*w
         ex2 = np.fliplr(np.flipud(norm_frame*w))
+        '''
         if i == 0:
             im1 = Image.fromarray(tonemap(ex1).copy(), 'L')
             im1.show()
             im2 = Image.fromarray(tonemap(ex2).copy(), 'L')
             im2.show()
+        '''
         conv_im = fftconvolve(ex1, ex2)
+        '''
         if i == 0:
             im = Image.fromarray(tonemap(conv_im).copy(), 'L')
             im.show()
+        '''
         conv_im *= ccnorm
+        '''
         if i == 0:
             im = Image.fromarray(tonemap(conv_im).copy(), 'L')
             im.show()
+        '''
         # Find maximum location
         max_loc = np.unravel_index(conv_im.argmax(), conv_im.shape)
         
@@ -162,7 +181,7 @@ def align(frames, template):
         curr_img = dtcwt.sampling.sample(frame, xs-dx, ys-dy, method='bilinear')
         # Warp image
         warped_ims.append(curr_img)
-        save_image('cur_img- ' + str(i), curr_img)
+        #save_image('cur_img- ' + str(i), curr_img)
         i += 1
     return np.dstack(warped_ims)
 
@@ -182,6 +201,7 @@ def register(frames, template, nlevels=7):
     template_t = transform.forward(norm_template, nlevels=nlevels)
 
     warped_ims = []
+    i = 0
     for frame_idx in xrange(frames.shape[2]):
         logging.info('Registering frame {0}/{1}'.format(frame_idx+1, frames.shape[2]))
         frame = frames[:,:,frame_idx]
@@ -195,8 +215,35 @@ def register(frames, template, nlevels=7):
 
         # Register
         reg = dtcwt.registration.estimatereg(frame_t, template_t)
-        warped_ims.append(dtcwt.registration.warp(frame, reg, method='bilinear'))
+        ex = dtcwt.registration.warp(frame, reg, method='bilinear')
+        
+        if i == 0:
+            im = Image.fromarray(tonemap(ex).copy(), 'L')
+            im.show()
+        kernel = np.zeros( (13,13), np.float32)
+        kernel[4,4] = 2.0    
+        boxFilter = np.ones( (13,13), np.float32) / 169.0
 
+        #Subtract the two:
+        kernel = kernel - boxFilter
+        imgIn = Image.fromarray(tonemap(ex).copy(), 'L')
+        custom = cv2.filter2D(ex, -1, kernel)
+        data  = np.asarray(custom)
+        # Extract data and store as floating point data
+        sharpened = np.array(data, dtype=np.float32).reshape(im.size[::-1])
+        '''
+        blurred_f = ndimage.gaussian_filter(ex, 3)
+        filter_blurred_f = ndimage.gaussian_filter(blurred_f, 1)
+        alpha = 30
+        sharpened = blurred_f + alpha * (blurred_f - filter_blurred_f)
+        '''
+        final_img = scipy.signal.wiener(sharpened)
+        if i == 0:
+            im = Image.fromarray(tonemap(final_img).copy(), 'L')
+            im.show()
+            
+        warped_ims.append(final_img)
+        i += 1
     return np.dstack(warped_ims)
 
 def tonemap(array):
@@ -309,7 +356,7 @@ files = []
 for (dirpath, dirnames, filenames) in walk(path):
     files.extend(filenames)
 print(files)
-input_frames = load_frames(path, files, options['--normalise'])
+input_frames = load_frames(path, files)
 
 if options['--save-input-frames']:
     logging.info('Saving input frames')
